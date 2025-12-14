@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import Papa from "papaparse";
 import VinResultCard from "./VinResult.jsx";
 
+
 export default function MultiVinInput({ vins, setVins }) {
   const [results, setResults] = useState({});
 
@@ -34,34 +35,31 @@ export default function MultiVinInput({ vins, setVins }) {
     return mapped;
   }
 
-  // FIXED VERSION
+  // 🔹 ONLY VIN DECODING HAPPENS HERE
+  // 🔹 Recalls / Complaints / Ratings are handled inside VinResultCard
   const decodeAllVins = async () => {
-  const newResults = {};
+    const newResults = {};
 
-  for (const vin of vins) {
-    if (vin.trim() === "") continue;
+    for (const vin of vins) {
+      if (vin.trim() === "") continue;
 
-    if (vin.length !== 17) {
-      alert(`❌ Invalid VIN: ${vin}`);
-      continue;
+      if (vin.length !== 17) {
+        alert(`❌ Invalid VIN: ${vin}`);
+        continue;
+      }
+
+      const res = await fetch(
+        `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vin}?format=json`
+      );
+      const data = await res.json();
+
+      newResults[vin] = mapApiResult(data);
+
+      saveToRecentVins(vin);
     }
 
-    const res = await fetch(
-      `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vin}?format=json`
-    );
-    const data = await res.json();
-
-    newResults[vin] = mapApiResult(data);
-
-    // ✅ Save to history
-    saveToRecentVins(vin);
-  }
-
-  setResults(newResults);
-};
-
-
-
+    setResults(newResults);
+  };
 
   const saveToRecentVins = (vin) => {
     let stored = JSON.parse(localStorage.getItem("recent_vins")) || [];
@@ -70,24 +68,19 @@ export default function MultiVinInput({ vins, setVins }) {
   };
 
   const handleCsvUpload = (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
+    const file = event.target.files[0];
+    if (!file) return;
 
-  Papa.parse(file, {
-    header: false,
-    skipEmptyLines: true,
-    complete: (results) => {
-      const extractedVins = results.data.map((row) => row[0]?.trim());
-
-      // Filter out invalid/short values
-      const cleaned = extractedVins.filter((v) => v && v.length > 0);
-
-      // Append to existing VINs in UI
-      setVins((prev) => [...prev, ...cleaned]);
-    },
-  });
-};
-
+    Papa.parse(file, {
+      header: false,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const extractedVins = results.data.map((row) => row[0]?.trim());
+        const cleaned = extractedVins.filter((v) => v && v.length > 0);
+        setVins((prev) => [...prev, ...cleaned]);
+      },
+    });
+  };
 
   return (
     <div style={{ maxWidth: "600px", margin: "40px auto", paddingLeft: "100px" }}>
@@ -102,7 +95,6 @@ export default function MultiVinInput({ vins, setVins }) {
             alignItems: "center",
           }}
         >
-          {/* INPUT WITH FRAMER MOTION */}
           <motion.input
             type="text"
             placeholder={`Enter VIN #${index + 1}`}
@@ -139,28 +131,6 @@ export default function MultiVinInput({ vins, setVins }) {
         </div>
       ))}
 
-      {/* CSV Upload */}
-{/* <motion.div
-  whileHover={{ scale: 1.03 }}
-  whileTap={{ scale: 0.97 }}
-  style={{ marginBottom: "20px" }}
->
-  <input
-    type="file"
-    accept=".csv"
-    onChange={handleCsvUpload}
-    style={{
-      padding: "10px",
-      border: "1px solid #ccc",
-      borderRadius: "6px",
-      cursor: "pointer",
-      width: "100%",
-    }}
-  />
-</motion.div> */}
-
-
-      {/* ADD VIN BUTTON */}
       <motion.button
         onClick={addVinField}
         whileHover={{ scale: 1.05 }}
@@ -180,7 +150,6 @@ export default function MultiVinInput({ vins, setVins }) {
 
       <br /><br />
 
-      {/* DECODE BUTTON */}
       <motion.button
         onClick={decodeAllVins}
         whileHover={{ scale: 1.07 }}

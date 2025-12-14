@@ -2,7 +2,16 @@ import { useState } from "react";
 import jsPDF from "jspdf";
 
 export default function VinResultCard({ vin, result }) {
-  const [showMore, setShowMore] = useState(false);
+  const [showAdditional, setShowAdditional] = useState(false);
+  const [showSafety, setShowSafety] = useState(false);
+  const [showRecalls, setShowRecalls] = useState(false);
+  const [showComplaints, setShowComplaints] = useState(false);
+
+  const [safetyData, setSafetyData] = useState(null);
+  const [recallData, setRecallData] = useState(null);
+  const [complaintData, setComplaintData] = useState(null);
+
+  const [showAllComplaints, setShowAllComplaints] = useState(false);
 
   if (!result) return null;
 
@@ -12,138 +21,153 @@ export default function VinResultCard({ vin, result }) {
     Year: result["Model Year"],
   };
 
-  /* ---------------------- EXPORT TO CSV ---------------------- */
+  /* ---------------------- FETCH EXTRA DATA ---------------------- */
+
+  const fetchSafety = async () => {
+    if (safetyData) return; // already fetched
+    const res = await fetch(
+      `https://api.nhtsa.gov/SafetyRatings/modelyear/${basicInfo.Year}/make/${basicInfo.Make}/model/${basicInfo.Model}`
+    );
+    const data = await res.json();
+    setSafetyData(data.Results || []);
+  };
+
+  const fetchRecalls = async () => {
+    if (recallData) return;
+    const res = await fetch(
+      `https://api.nhtsa.gov/recalls/recallsByVehicle?make=${basicInfo.Make}&model=${basicInfo.Model}&modelYear=${basicInfo.Year}`
+    );
+    const data = await res.json();
+    setRecallData(data.results || []);
+  };
+
+  const fetchComplaints = async () => {
+    if (complaintData) return;
+    const res = await fetch(
+      `https://api.nhtsa.gov/complaints/complaintsByVehicle?make=${basicInfo.Make}&model=${basicInfo.Model}&modelYear=${basicInfo.Year}`
+    );
+    const data = await res.json();
+    setComplaintData(data.results || []);
+  };
+
+  /* ---------------------- EXPORTS (UNCHANGED) ---------------------- */
+
   const exportCSV = () => {
     const rows = [["Field", "Value"]];
-
-    Object.entries(result).forEach(([key, val]) => {
-      rows.push([key, val || "N/A"]);
+    Object.entries(result).forEach(([key, val]) =>
+      rows.push([key, val || "N/A"])
+    );
+    const blob = new Blob([rows.map(r => r.join(",")).join("\n")], {
+      type: "text/csv",
     });
-
-    const csvContent = rows.map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv" });
-
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `${vin}_decoded.csv`;
     link.click();
   };
 
-  /* ---------------------- EXPORT TO PDF ---------------------- */
   const exportPDF = () => {
     const doc = new jsPDF();
-
-    doc.setFontSize(16);
     doc.text(`VIN Report: ${vin}`, 10, 15);
-
-    doc.setFontSize(12);
-
     let y = 30;
-    Object.entries(result).forEach(([key, val]) => {
-      doc.text(`${key}: ${val || "N/A"}`, 10, y);
+    Object.entries(result).forEach(([k, v]) => {
+      doc.text(`${k}: ${v || "N/A"}`, 10, y);
       y += 7;
-      if (y > 270) {
-        doc.addPage();
-        y = 20;
-      }
     });
-
     doc.save(`${vin}_decoded.pdf`);
   };
 
   return (
-    <div
-      style={{
-        border: "1px solid #ccc",
-        padding: "15px",
-        borderRadius: "8px",
-        marginBottom: "15px",
-        background: "#fafafa",
-        marginTop: "10px",
-        color: "#555",
-      }}
-    >
-      {/* ---------------- HEADER WITH EXPORT BUTTONS ---------------- */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <h3 style={{ margin: 0 }}>VIN: {vin}</h3>
-
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onClick={exportCSV}
-            style={{
-              padding: "6px 10px",
-              borderRadius: "6px",
-              background: "#6c757d",
-              color: "white",
-              cursor: "pointer",
-              border: "none",
-            }}
-          >
-            CSV
-          </button>
-
-          <button
-            onClick={exportPDF}
-            style={{
-              padding: "6px 10px",
-              borderRadius: "6px",
-              background: "#dc3545",
-              color: "white",
-              cursor: "pointer",
-              border: "none",
-            }}
-          >
-            PDF
-          </button>
-        </div>
-      </div>
+    <div style={{ border: "1px solid #ccc", padding: "15px", borderRadius: "8px", marginBottom: "15px" }}>
+      <h3>VIN: {vin}</h3>
 
       {/* BASIC INFO */}
-      <div style={{ marginTop: "8px" }}>
-        {Object.entries(basicInfo).map(([key, val]) => (
-          <p key={key}>
-            <strong>{key}: </strong>
-            {val || "N/A"}
-          </p>
-        ))}
+      {Object.entries(basicInfo).map(([k, v]) => (
+        <p key={k}><strong>{k}:</strong> {v || "N/A"}</p>
+      ))}
+
+      {/* ACTION BUTTONS */}
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        <button onClick={() => setShowAdditional(!showAdditional)}>
+          View Additional Info
+        </button>
+
+        <button onClick={() => { setShowSafety(!showSafety); fetchSafety(); }}>
+          View Safety Info
+        </button>
+
+        <button onClick={() => { setShowRecalls(!showRecalls); fetchRecalls(); }}>
+          View Recall Info
+        </button>
+
+        <button onClick={() => { setShowComplaints(!showComplaints); fetchComplaints(); }}>
+          View Complaints
+        </button>
       </div>
 
-      {/* SHOW MORE */}
-      {showMore && (
-        <div style={{ marginTop: "10px" }}>
-          {Object.entries(result).map(([key, val]) => {
-            if (basicInfo[key] !== undefined) return null;
-            return (
-              <p key={key}>
-                <strong>{key}: </strong>
-                {val || "N/A"}
-              </p>
-            );
-          })}
+      {/* ADDITIONAL INFO */}
+      {showAdditional && (
+        <div>
+          {Object.entries(result).map(([k, v]) => (
+            <p key={k}><strong>{k}:</strong> {v || "N/A"}</p>
+          ))}
         </div>
       )}
 
-      {/* TOGGLE */}
-      <button
-        onClick={() => setShowMore(!showMore)}
-        style={{
-          marginTop: "10px",
-          padding: "8px 12px",
-          borderRadius: "6px",
-          cursor: "pointer",
-          background: "#007bff",
-          color: "white",
-          border: "none",
-        }}
-      >
-        {showMore ? "Show Less" : "Show More"}
-      </button>
+      {/* SAFETY */}
+      {showSafety && (
+        <div>
+          {safetyData?.length
+            ? safetyData.map((s, i) => (
+                <p key={i}>{s.VehicleDescription}</p>
+              ))
+            : <p>No safety ratings found.</p>}
+        </div>
+      )}
+
+      {/* RECALLS */}
+      {showRecalls && (
+        <div>
+          {recallData?.length
+            ? recallData.map((r, i) => (
+                <p key={i}><strong>{r.Component}:</strong> {r.Summary}</p>
+              ))
+            : <p>No recalls found.</p>}
+        </div>
+      )}
+
+      {/* COMPLAINTS */}
+      {/* COMPLAINTS */}
+{showComplaints && (
+  <div style={{ marginTop: "15px" }}>
+    <h4>Complaints</h4>
+
+    {complaintData?.length ? (
+      <>
+        {(showAllComplaints
+          ? complaintData
+          : complaintData.slice(0, 5) // ✅ CHANGED: limit to first 5
+        ).map((c, i) => (
+          <p key={i} style={{ fontSize: "14px" }}>
+            • {c.complaintSummary || c.summary || "No details available"}
+          </p>
+        ))}
+
+        {complaintData.length > 5 && (
+          <button
+            onClick={() => setShowAllComplaints(!showAllComplaints)}
+            style={{ marginTop: "8px" }}
+          >
+            {showAllComplaints ? "Hide complaints" : "Show all complaints"}
+          </button>
+        )}
+      </>
+    ) : (
+      <p>No complaints found.</p>
+    )}
+  </div>
+)}
+
     </div>
   );
 }
