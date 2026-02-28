@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
 
+import { auth, db } from "../firebase"; 
+import { doc, getDoc, updateDoc, increment } from "firebase/firestore";
+
 const VehicleBrowser = () => {
   const [companies, setCompanies] = useState([]);
   const [models, setModels] = useState({});
@@ -8,9 +11,26 @@ const VehicleBrowser = () => {
   const [loadingModelFor, setLoadingModelFor] = useState(null);
 
   const fetchCompanies = async () => {
+
+    const user = auth.currentUser;
+    if (!user) return alert("Please log in first!");
+
     setLoadingCompanies(true);
 
     try {
+      // 🔹 Credit Check & Deduction
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists() || userSnap.data().credits <= 0) {
+        alert("❌ Insufficient credits to view companies.");
+        setLoadingCompanies(false);
+        return;
+      }
+
+      // Deduct 1 credit
+      await updateDoc(userRef, { credits: increment(-1) });
+
       const res = await fetch(
         "https://vpic.nhtsa.dot.gov/api/vehicles/GetMakesForVehicleType/car?format=json"
       );

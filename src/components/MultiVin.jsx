@@ -1,177 +1,208 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
-import Papa from "papaparse";
+import { auth, db } from "../firebase";
+import { doc, getDoc, updateDoc, increment, setDoc, serverTimestamp, arrayUnion } from "firebase/firestore";
 import VinResultCard from "./VinResult.jsx";
-
 
 export default function MultiVinInput({ vins, setVins }) {
   const [results, setResults] = useState({});
 
   const handleVinChange = (index, value) => {
-    const updated = [...vins];
-    updated[index] = value.toUpperCase();
-    setVins(updated);
+    const newVins = [...vins];
+    newVins[index] = value;
+    setVins(newVins);
   };
 
-  const addVinField = () => setVins([...vins, ""]);
+  const addVinField = () => {
+    setVins([...vins, ""]);
+  };
 
   const removeVinField = (index) => {
-    const vinText = vins[index];
-    const filtered = vins.filter((_, i) => i !== index);
-    setVins(filtered);
-
-    const updatedResults = { ...results };
-    delete updatedResults[vinText];
-    setResults(updatedResults);
+    setVins(vins.filter((_, i) => i !== index));
   };
 
-  function mapApiResult(apiData) {
+  const mapApiResult = (data) => {
     const mapped = {};
-    apiData.Results.forEach((item) => {
-      if (item.Variable) {
-        mapped[item.Variable] = item.Value || "N/A";
+    data.Results?.forEach((item) => {
+      if (item.Value !== null && item.Value !== "") {
+        mapped[item.Variable] = item.Value;
       }
     });
     return mapped;
-  }
+  };
 
-  // 🔹 ONLY VIN DECODING HAPPENS HERE
-  // 🔹 Recalls / Complaints / Ratings are handled inside VinResultCard
+  const saveToRecentVins = async (vin) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists()) return;
+
+      const recentVins = userSnap.data().recentlyUsedVins || [];
+
+      // Add to front and keep only last 10
+      let updated = [vin, ...recentVins.filter(v => v !== vin)];
+      if (updated.length > 10) updated = updated.slice(0, 10);
+
+      await updateDoc(userRef, {
+        recentlyUsedVins: updated,
+      });
+    } catch (error) {
+      console.error("Error saving to recent VINs:", error);
+    }
+  };
+
   const decodeAllVins = async () => {
-    const newResults = {};
-
-    for (const vin of vins) {
-      if (vin.trim() === "") continue;
-
-      if (vin.length !== 17) {
-        alert(`❌ Invalid VIN: ${vin}`);
-        continue;
-      }
-
-      const res = await fetch(
-        `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vin}?format=json`
-      );
-      const data = await res.json();
-
-      newResults[vin] = mapApiResult(data);
-
-      saveToRecentVins(vin);
+    const user = auth.currentUser;
+    if (!user) {
+      alert("Please log in to decode VINs.");
+      return;
     }
 
-    setResults(newResults);
+    const validVins = vins.filter((v) => v.trim().length === 17);
+    if (validVins.length === 0) {
+      alert("Please enter at least one valid 17-digit VIN.");
+      return;
+    }
+
+    try {
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists()) {
+        alert("User profile not found.");
+        return;
+      }
+
+      const availableCredits = userSnap.data().credits || 0;
+      if (availableCredits <= 0) {
+        alert("❌ You have 0 credits left. Please top up to continue.");
+        return;
+      }
+
+      await updateDoc(userRef, {
+        credits: increment(-1),
+      });
+
+      const newResults = { ...results };
+
+      for (const vin of validVins) {
+        const res = await fetch(
+          `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vin}?format=json`
+        );
+        const data = await res.json();
+        const mappedData = mapApiResult(data);
+
+        newResults[vin] = mappedData;
+        await saveToRecentVins(vin);
+
+        // 🔹 NEW: Save to Firestore for Auto-Monitoring
+        await saveVehicleForMonitoring(user.uid, vin, mappedData);
+      }
+
+      setResults(newResults);
+      alert("✅ 1 Credit deducted. VINs decoded and added to Auto-Monitor!");
+      
+    } catch (error) {
+      console.error("Error:", error);
+      alert("An error occurred. Check your connection.");
+    }
   };
 
-  const saveToRecentVins = (vin) => {
-    let stored = JSON.parse(localStorage.getItem("recent_vins")) || [];
-    stored = [vin, ...stored.filter((v) => v !== vin)].slice(0, 10);
-    localStorage.setItem("recent_vins", JSON.stringify(stored));
+  // 🔹 NEW HELPER FUNCTION
+  const saveVehicleForMonitoring = async (userId, vin, vehicleData) => {
+    try {
+      // Document ID is vin_userId to prevent duplicates for the same user
+      const vehicleRef = doc(db, "vehicles", `${vin}_${userId}`);
+      
+      await setDoc(vehicleRef, {
+        userId: userId,
+        vin: vin,
+        make: vehicleData["Make"] || "Unknown",
+        model: vehicleData["Model"] || "Unknown",
+        year: vehicleData["Model Year"] || "Unknown",
+        lastCheckedAt: serverTimestamp(),
+        // We initialize this as an empty array; 
+        // Cloud functions will fill this with IDs of recalls already handled.
+        processedRecallIds: [], 
+      }, { merge: true }); // merge: true prevents overwriting other fields if they exist
+    } catch (err) {
+      console.error("Failed to save to monitor:", err);
+    }
   };
 
-  const handleCsvUpload = (event) => {
-    const file = event.target.files[0];
+  const handleCsvUpload = (e) => {
+    const file = e.target.files[0];
     if (!file) return;
-
-    Papa.parse(file, {
-      header: false,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const extractedVins = results.data.map((row) => row[0]?.trim());
-        const cleaned = extractedVins.filter((v) => v && v.length > 0);
-        setVins((prev) => [...prev, ...cleaned]);
-      },
-    });
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target.result;
+      const lines = text.split("\n").map(line => line.trim()).filter(line => line);
+      const uploadedVins = lines.filter(vin => vin.length === 17);
+      setVins([...vins, ...uploadedVins]);
+    };
+    reader.readAsText(file);
   };
 
   return (
-    <div style={{ maxWidth: "600px", margin: "40px auto", paddingLeft: "100px" }}>
-      <h2>VIN Decoder (Multiple VINs)</h2>
-
-      {vins.map((vin, index) => (
-        <div
-          key={index}
-          style={{
-            marginBottom: "12px",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <motion.input
-            type="text"
-            placeholder={`Enter VIN #${index + 1}`}
-            value={vin}
-            onChange={(e) => handleVinChange(index, e.target.value)}
-            whileHover={{ scale: 1.03 }}
-            whileFocus={{ scale: 1.04 }}
-            transition={{ type: "spring", stiffness: 200 }}
-            style={{
-              flex: 1,
-              padding: "10px",
-              fontSize: "16px",
-              borderRadius: "6px",
-              border: "1px solid #ccc",
-            }}
-          />
-
-          {vins.length > 1 && (
-            <motion.span
+    <div style={{ padding: "20px", maxWidth: "800px", margin: "0 auto" }}>
+      <h2>Multi-VIN Decoder</h2>
+      
+      {/* VIN INPUT FIELDS */}
+      <div style={{ marginBottom: "20px" }}>
+        {vins.map((vin, index) => (
+          <div key={index} style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
+            <input
+              type="text"
+              value={vin}
+              onChange={(e) => handleVinChange(index, e.target.value.toUpperCase())}
+              placeholder={`VIN ${index + 1} (17 characters)`}
+              maxLength="17"
+              style={{ flex: 1, padding: "8px", fontSize: "14px" }}
+            />
+            <button
               onClick={() => removeVinField(index)}
-              whileHover={{ scale: 1.3 }}
-              whileTap={{ scale: 0.9 }}
-              transition={{ type: "spring", stiffness: 200 }}
-              style={{
-                marginLeft: "10px",
-                cursor: "pointer",
-                fontSize: "20px",
-                color: "red",
-              }}
+              style={{ padding: "8px 12px", backgroundColor: "#d9534f", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
             >
-              ✖
-            </motion.span>
-          )}
-        </div>
-      ))}
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
 
-      <motion.button
-        onClick={addVinField}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        transition={{ type: "spring", stiffness: 200 }}
-        style={{
-          padding: "10px 15px",
-          fontSize: "16px",
-          cursor: "pointer",
-          background: "#007bff",
-          color: "white",
-          borderRadius: "5px",
-        }}
-      >
-        + Add Another VIN
-      </motion.button>
+      {/* ACTION BUTTONS */}
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "20px" }}>
+        <button
+          onClick={addVinField}
+          style={{ padding: "10px 15px", backgroundColor: "#5cb85c", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
+        >
+          + Add VIN
+        </button>
+        <button
+          onClick={decodeAllVins}
+          style={{ padding: "10px 15px", backgroundColor: "#0275d8", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
+        >
+          Decode All VINs
+        </button>
+        <label style={{ padding: "10px 15px", backgroundColor: "#f0ad4e", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", display: "inline-block" }}>
+          Upload CSV
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleCsvUpload}
+            style={{ display: "none" }}
+          />
+        </label>
+      </div>
 
-      <br /><br />
-
-      <motion.button
-        onClick={decodeAllVins}
-        whileHover={{ scale: 1.07 }}
-        whileTap={{ scale: 0.93 }}
-        transition={{ type: "spring", stiffness: 200 }}
-        style={{
-          padding: "12px 18px",
-          fontSize: "17px",
-          background: "green",
-          color: "white",
-          borderRadius: "6px",
-          cursor: "pointer",
-        }}
-      >
-        Decode All VINs
-      </motion.button>
-
-      <hr style={{ margin: "30px 0" }} />
-
-      {Object.keys(results).map((vin) => (
-        <VinResultCard key={vin} vin={vin} result={results[vin]} />
-      ))}
+      {/* RESULTS */}
+      <div>
+        {Object.entries(results).map(([vin, result]) => (
+          <VinResultCard key={vin} vin={vin} result={result} />
+        ))}
+      </div>
     </div>
   );
 }

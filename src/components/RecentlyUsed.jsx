@@ -1,16 +1,67 @@
 import { useEffect, useState } from "react";
+import { auth, db } from "../firebase";
+import { doc, getDoc, updateDoc, arrayRemove } from "firebase/firestore";
 
 export default function RecentlyUsed({ onSelectVin }) {
   const [recentVins, setRecentVins] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem("recent_vins")) || [];
-    setRecentVins(stored);
+    const fetchRecentVins = async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user) {
+          setLoading(false);
+          return;
+        }
+
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+          const recentVinsData = userSnap.data().recentlyUsedVins || [];
+          setRecentVins(recentVinsData);
+        }
+      } catch (error) {
+        console.error("Error fetching recent VINs:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchRecentVins();
   }, []);
 
-  const clearHistory = () => {
-    localStorage.removeItem("recent_vins");
-    setRecentVins([]);
+  const clearHistory = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const userRef = doc(db, "users", user.uid);
+      await updateDoc(userRef, {
+        recentlyUsedVins: [],
+      });
+
+      setRecentVins([]);
+    } catch (error) {
+      console.error("Error clearing history:", error);
+    }
+  };
+
+  const removeVin = async (vin) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const userRef = doc(db, "users", user.uid);
+      await updateDoc(userRef, {
+        recentlyUsedVins: arrayRemove(vin),
+      });
+
+      setRecentVins(recentVins.filter(v => v !== vin));
+    } catch (error) {
+      console.error("Error removing VIN:", error);
+    }
   };
 
   return (
@@ -44,16 +95,21 @@ export default function RecentlyUsed({ onSelectVin }) {
         )}
       </div>
 
-      {recentVins.length === 0 && (
+      {loading && (
+        <p style={{ fontSize: "14px", color: "#666" }}>Loading...</p>
+      )}
+
+      {!loading && recentVins.length === 0 && (
         <p style={{ fontSize: "14px", color: "#666" }}>No VIN history yet.</p>
       )}
 
       {recentVins.map((vin, index) => (
-        <p
+        <div
           key={index}
-          onClick={() => onSelectVin(vin)}
           style={{
-            cursor: "pointer",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
             background: "#fff",
             padding: "8px",
             marginTop: "6px",
@@ -61,8 +117,33 @@ export default function RecentlyUsed({ onSelectVin }) {
             border: "1px solid #ddd",
           }}
         >
-          {vin}
-        </p>
+          <p
+            onClick={() => onSelectVin(vin)}
+            style={{
+              cursor: "pointer",
+              margin: 0,
+              flex: 1,
+              fontSize: "14px",
+            }}
+          >
+            {vin}
+          </p>
+          <button
+            onClick={() => removeVin(vin)}
+            style={{
+              background: "#dc3545",
+              color: "white",
+              border: "none",
+              cursor: "pointer",
+              padding: "4px 8px",
+              borderRadius: "4px",
+              fontSize: "12px",
+              marginLeft: "8px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
       ))}
     </div>
   );
